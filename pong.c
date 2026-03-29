@@ -3,7 +3,30 @@
 volatile uint16_t* VGA_BUFFER = (uint16_t*)FPGA_PIXEL_BUF_BASE; */
 	
 #include <stdint.h>
+#include <math.h>
+#include <string.h>
 volatile uint16_t* VGA_BUFFER = (uint16_t*)0xC8000000;
+
+// Defualt colours
+uint16_t WHITE = 0xFFFF;
+
+// Ball default values
+int BALL_SIZE = 8;
+int BALL_INIT_SPEED = 5;
+int BALL_START[2] = {320/2, 240/2};
+
+
+/* A9 Private Timer */
+#define A9_TIMER_BASE    0xFFFEC600
+#define A9_LOAD          0x00
+#define A9_COUNT         0x04
+#define A9_CONTROL       0x08
+#define A9_STATUS        0x0C
+#define TIMER_TICKED() (*TIMER_STAT & 1)
+	
+volatile uint32_t *TIMER_LOAD    = (uint32_t *)(A9_TIMER_BASE + A9_LOAD);
+volatile uint32_t *TIMER_CTRL    = (uint32_t *)(A9_TIMER_BASE + A9_CONTROL);
+volatile uint32_t *TIMER_STAT    = (uint32_t *)(A9_TIMER_BASE + A9_STATUS);
 
 // 0 < x < 320
 // 0 < y < 240
@@ -26,16 +49,99 @@ void draw_pixel(int x, int y, uint16_t color) {
     *(VGA_BUFFER + (y << 9) + x) = color;
 }
 
-int main(void) {
-	// Draw all pixels black:
-	for (int i = 0; i < 320; i++) {
-		for (int j = 0; j < 240; j++) {
-			draw_pixel(i, j, 0x0000);
+
+static void timer_init(void) {
+    *TIMER_CTRL = 0;
+    *TIMER_LOAD = 3333333U;   // 200MHz * 0.01s
+    *TIMER_STAT = 1U;         // clear timeout
+    *TIMER_CTRL = 0x3U;       // enable + auto-reload
+}
+
+
+void draw_square(int xpos, int ypos, int height, int width, uint16_t colour){
+	int offset_x = xpos - (width/2);
+	int offset_y = ypos - (height/2);
+	for (int i = 0; i < height; i++){
+		for (int j = 0; j < width; j++){
+		
+			draw_pixel(offset_x + i, offset_y + j, WHITE);
 		}
 	}
+}
 
-    draw_pixel(64, 32, 0xFFFF); // Draw a white pixel at x=64, y=32 
+
+void draw_circle(int xpos, int ypos, int rad, uint16_t colour){
+	for (int r = -rad; r <= rad; r++){
+		int x = sqrt(pow(rad,2) - pow(r,2));
+		
+		for ( int i = -x; i <= x; i++){
+			draw_pixel(xpos + i, ypos + r, colour);
+		}
+	}
+}
+
+
+void clear_screen(){
+	memset((void*)VGA_BUFFER, 0x0000, 512 * 240 * sizeof(uint16_t));
+}
+
+// Checks if the ball has created some sort of collision and changes speed acordingly
+// Returns speed as a new speed array [x,y]
+
+int check_ball_collisions(x, y, speed_x, speed_y){
+	// Check if pos + speed overlaps not just pos
+	// Try and make paddle collide on a circle hitbox not a square
+	// Wall hitbox willalways be on a perfect x/y peak of the circle so it doesnt matter
+	// ball + paddle will change reflection angle based on dist from centre of the paddle
+	// keep speed = init_speed^2 = sqrt(x^2 +y^2)
+	// wall bounce is either reset(player point) or perfect just invert y speed(top/bottom wall bounce)
+	
+	return [speed_x, speed_y];	// Filler for now
+}
+
+
+
+int main(void) {
+
+	// Ball starting non constnat values
+	// All arrays for pos/speed are [x,y]
+	int ball_speed[2] = {0,5};
+	int ball_pos[2] = {BALL_START[0], BALL_START[1]};
+	
+	
+	// Player scores
+	// [P1, P2]
+	int score[2]={0,0};
+	
+	// Clear the screen and start the timers
+	clear_screen();
+	timer_init();
+	
+    while(1) {
+		
+		if (TIMER_TICKED()) {
+			*TIMER_STAT = 1;
+			static int tick_count = 0;
+			tick_count++;
+			if (tick_count >= 2) {
+				tick_count = 0;
+				
+				// Measure first players pos here
+
+				clear_screen();
+				
+				ball_speed = check_ball_collisions(ball_pos[0], ball_pos[1], ball_speed[0], ball_speed[1]);
+
+			
+				
+				// Update ball pos
+				ball_pos += ball_speed;
+				draw_circle(ball_pos[0], ball_pos[1], BALL_SIZE, WHITE);
+			}else{
+				// Measure other players pos her
+			}
+		}
     
-    while(1) {}
+	}
     return 0;
 }
