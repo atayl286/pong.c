@@ -11,6 +11,10 @@ volatile uint32_t* timer_counter = (uint32_t*)(0xFFFEC600 + 0x04);
 volatile uint32_t* timer_control = (uint32_t*)(0xFFFEC600 + 0x08);
 volatile uint32_t* timer_status  = (uint32_t*)(0xFFFEC600 + 0x0C);
 
+//Other memory locations:
+volatile uint32_t* seven_segment_base_0_3 = 0xFF200020;
+volatile uint32_t* seven_segment_base_4_5 = 0xFF200030;
+
 // Colours:
 #define WHITE 0xFFFF
 #define BLACK 0x0000
@@ -27,6 +31,17 @@ volatile uint32_t* timer_status  = (uint32_t*)(0xFFFEC600 + 0x0C);
 
 #define P1_X 20
 #define P2_X 300
+
+//Game control:
+#define SCORE_TO_WIN 10
+#define STATE_PLAY 0
+#define STATE_PAUSE 1
+#define STATE_WIN 2
+
+//Seven segment codes
+char seven_segment_digits[] = {0x3F, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7D, 0x07, 0x7f, 0x6f};
+char seven_segment_P = 0x73;
+char seven_segment_left1 = 0x30;
 
 // Ball:
 int ball_x = X_CENTRE;
@@ -54,19 +69,45 @@ int p2_b = Y_CENTRE + PADDLE_HEIGHT/2;
 int p2_l = P2_X - PADDLE_WIDTH/2;
 int p2_r = P2_X + PADDLE_WIDTH/2;
 
+//Scoring and game control:
+int p1_score = 0;
+int p2_score = 0;
+int gamestate = STATE_PAUSE;
+
 int main(void) {
 	init_frame_timer();
+	seven_segment_init();
 
+	//Main loop
     while(1) {
+		//Logic that always happens
 		wait_for_next_frame();
-		clear_pixel_buffer();
 
-		update_ball();
-		draw_ball(ball_x, ball_y, FOREGROUND);
-		draw_paddle(p1_x, p1_y);
-		draw_paddle(p2_x, p2_y);
+		//State-based logic
+		switch(gamestate) {
+			case STATE_PLAY:
+				clear_pixel_buffer();
 
-		push_frame();
+				update_ball();
+				draw_ball(ball_x, ball_y);
+				draw_paddle(p1_x, p1_y);
+				draw_paddle(p2_x, p2_y);
+
+				seven_segment_update();
+
+				push_frame();
+				break;
+
+			case STATE_PAUSE:
+				//TEMPORARY, CHANGE TO REAL PAUSE LOGIC
+				gamestate = STATE_PLAY;
+				break;
+
+			case STATE_WIN:
+				//TEMPORARY, CHANGE TO REAL RESET LOGIC
+				gamestate = STATE_PLAY;
+				break;
+		}
 	}
     return 0;
 }
@@ -123,13 +164,31 @@ void update_ball() {
 		ball_v_y *= -1;
 	}
 
-	// Left side collides with edge of screen of P1
-	if (next_ball_l <= 0 || (next_ball_l <= p1_r && (next_ball_b >= p1_t && next_ball_t <= p1_b))) {
+	// Left side collides with edge of screen
+	if (next_ball_l <= 0) {
+		ball_v_x *= -1;
+
+		//Score point for P1
+		score_point(1);
+	}
+
+	// Left side collides with P1
+	if (next_ball_l <= p1_r && (next_ball_b >= p1_t && next_ball_t <= p1_b)) {
+		//TEMPORARY, CHANGE THIS TO COOL BOUNCE
 		ball_v_x *= -1;
 	}
 
-	// Right side collides with edge of screen or P2
-	if (next_ball_r >= 320 || (next_ball_r >= p2_r && (next_ball_b >= p2_t && next_ball_t <= p2_b))) {
+	// Right side collides with edge of screen
+	if (next_ball_r >= 320) {
+		ball_v_x *= -1;
+
+		//Score point for P2
+		score_point(2);
+	}
+
+	//Right side collides with P2
+	if (next_ball_r >= p2_r && (next_ball_b >= p2_t && next_ball_t <= p2_b)) {
+		//TEMPORARY, CHANGE THIS TO COOL BOUNCE
 		ball_v_x *= -1;
 	}
 
@@ -140,6 +199,57 @@ void update_ball() {
 	ball_b = ball_y - BALL_DIAMETER/2;
 	ball_l = ball_x - BALL_DIAMETER/2;
 	ball_r = ball_x + BALL_DIAMETER/2;
+}
+
+// Scores a point for the given player and check for their win (player should be 1 or 2)
+void score_point(int player) {
+	switch (player) {
+		case 1:
+			if(p1_score < SCORE_TO_WIN - 1)
+				p1_score++;
+			else {
+				//P1 wins
+				gamestate = STATE_WIN;
+				draw_P_WINS(1);
+			}
+			break;
+		
+		case 2:
+			if(p2_score < SCORE_TO_WIN - 1)
+				p2_score++;
+			else {
+				//P2 wins
+				gamestate = STATE_WIN;
+				draw_P_WINS(2);
+			}
+			break;
+	}
+}
+
+// Initializes the seven segment displays with 0 P 1(left) P 2 0
+void seven_segment_init() {
+	//First four digits
+	*seven_segment_base_0_3 = 0;
+	*seven_segment_base_0_3 |= seven_segment_left1 << 24;
+	*seven_segment_base_0_3 |= seven_segment_P << 16;
+	*seven_segment_base_0_3 |= seven_segment_digits[2] << 8;
+	*seven_segment_base_0_3 |= seven_segment_digits[0];
+
+	//Last two digits
+	*seven_segment_base_4_5 = 0;
+	*seven_segment_base_4_5 |= seven_segment_digits[0] << 8;
+	*seven_segment_base_4_5 |= seven_segment_P;
+}
+
+// Updates the seven segment displays based on the current score
+void seven_segment_update() {
+	//Wipe the first and last digits
+	*seven_segment_base_0_3 &= 0xFFFFFF00;
+	*seven_segment_base_4_5 &= 0x000000FF;
+
+	//Update digits
+	*seven_segment_base_0_3 |= seven_segment_digits[p1_score];
+	*seven_segment_base_4_5 |= seven_segment_digits[p2_score] << 8;
 }
 
 // Draws a circle of given radius and colour and a given position
