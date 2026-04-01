@@ -1,6 +1,7 @@
 // #include "address_map_arm.h"
 #include <stdint.h>
 #include <math.h>
+#include <string.h>
 	
 volatile uint16_t* VGA_BUFFER = (uint16_t*)0xC8000000 /* (uint16_t*)FPGA_PIXEL_BUF_BASE */; // Hardware VGA buffer.
 uint16_t pixel_buffer[240][512] = {0}; // Software pixel buffer (for double-buffering)
@@ -12,11 +13,15 @@ volatile uint32_t* timer_control = (uint32_t*)(0xFFFEC600 + 0x08);
 volatile uint32_t* timer_status  = (uint32_t*)(0xFFFEC600 + 0x0C);
 
 //Other memory locations:
-volatile uint32_t* seven_segment_base_0_3 = 0xFF200020;
-volatile uint32_t* seven_segment_base_4_5 = 0xFF200030;
+volatile uint32_t* seven_segment_base_0_3 = (uint32_t*)(0xFF200020);
+volatile uint32_t* seven_segment_base_4_5 = (uint32_t*)(0xFF200030);
 
-// ADC memory location:
+
+
 #define ADC_BASE   0xFF204000u
+#define KEY_BASE   0xFF200050
+
+volatile uint32_t *KEY_ptr = (uint32_t *)KEY_BASE;
 
 
 // Colours:
@@ -43,6 +48,10 @@ volatile uint32_t* seven_segment_base_4_5 = 0xFF200030;
 #define STATE_PLAY 0
 #define STATE_PAUSE 1
 #define STATE_WIN 2
+
+// Timer macros:
+#define TIMER_TICKED() ((*timer_status & 0x1u) != 0u)
+#define TIMER_STAT timer_status
 
 //Seven segment codes
 char seven_segment_digits[] = {0x3F, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7D, 0x07, 0x7f, 0x6f};
@@ -81,12 +90,55 @@ int p1_score = 0;
 int p2_score = 0;
 int gamestate = STATE_PAUSE;
 
+// Prototypes:
+void init_frame_timer(void);
+void seven_segment_init(void);
+void wait_for_next_frame(void);
+void clear_pixel_buffer(void);
+void update_ball(void);
+void draw_ball(int xpos, int ypos);
+void draw_paddle(int xpos, int ypos);
+void seven_segment_update(void);
+void push_frame(void);
+void score_point(int player);
+void draw_P_WINS(int player);
+static inline uint32_t adc_to_y_pos(uint32_t adc_value);
+
 int main(void) {
 	init_frame_timer();
 	seven_segment_init();
+	uint32_t prev_pressed = 0;
 
 	//Main loop
     while(1) {
+
+		// Handle key presses (for pausing and resetting the game)
+		uint32_t raw = *KEY_ptr & 0xFU;        // active-low
+        uint32_t pressed = (~raw) & 0xFU;      // active-high
+        uint32_t edge = pressed & (~prev_pressed);
+        prev_pressed = pressed;
+
+		if (edge & 0x1U){
+			//KEY0: Pause
+			if(gamestate == STATE_PLAY){
+				gamestate = STATE_PAUSE;
+			}else if(gamestate == STATE_PAUSE){
+				gamestate = STATE_PLAY;
+			}else if(gamestate == STATE_WIN){
+
+				//reset game
+				p1_score = 0;
+				p2_score = 0;
+				ball_x = X_CENTRE;
+				ball_y = Y_CENTRE;
+				ball_v_x = 6;
+				ball_v_y = 3;
+
+				gamestate = STATE_PLAY;
+			}
+		}
+
+
 		
 		//measure one players pos at a time and only update screen after both have been measured
 		if (TIMER_TICKED()) {
@@ -95,12 +147,17 @@ int main(void) {
 			tick_count++;
 			if (tick_count >= 2) {
 				tick_count = 0;
+
 				// Update p1 y pos
 				p1_y = adc_to_y_pos(*(volatile uint32_t*)(ADC_BASE));
+				p1_t = p1_y - PADDLE_HEIGHT/2;
+				p1_b = p1_y + PADDLE_HEIGHT/2;
 
 			}else{
 				// Update p2 y pos
 				p2_y = adc_to_y_pos(*(volatile uint32_t*)(ADC_BASE + 0x04));
+				p2_t = p2_y - PADDLE_HEIGHT/2;
+				p2_b = p2_y + PADDLE_HEIGHT/2;
 
 				//Logic that always happens
 				wait_for_next_frame();
@@ -121,27 +178,28 @@ int main(void) {
 						break;
 
 					case STATE_PAUSE:
-						//TEMPORARY, CHANGE TO REAL PAUSE LOGIC
-						gamestate = STATE_PLAY;
+						draw_pause();
+						push_frame();
+						
 						break;
 
 					case STATE_WIN:
 						//TEMPORARY, CHANGE TO REAL RESET LOGIC
-						gamestate = STATE_PLAY;
 						break;
 				}
 
 			}
 
-	
+		}
 	}
+
     return 0;
 }
 
 // Initializes the ARM A9 timer.
 void init_frame_timer() {
 	*timer_control = 0; // Turns it OFF while changing settings (if it happens to be ON already)
-	*timer_load = 3333333U;; // Time between frames (will need to be changed on real hardware)
+	*timer_load = 3333333U; // Time between frames (will need to be changed on real hardware)
 	*timer_status = 1; // Clear any remaning old status flags
 	*timer_control = 3; // Start time with auto-reload
 }
@@ -179,6 +237,8 @@ void update_ball() {
 	int next_ball_b = ball_y + ball_v_y  - BALL_DIAMETER/2;
 	int next_ball_l = ball_x + ball_v_x  - BALL_DIAMETER/2;
 	int next_ball_r = ball_x + ball_v_x  + BALL_DIAMETER/2;
+	int y_overlap_p1 = (next_ball_b >= p1_t && next_ball_t <= p1_b);
+	int y_overlap_p2 = (next_ball_b >= p2_t && next_ball_t <= p2_b);
 
 	// Top side collides with top of screen
 	if (next_ball_t <= 0) {
@@ -190,32 +250,24 @@ void update_ball() {
 		ball_v_y *= -1;
 	}
 
-	// Left side collides with edge of screen
+	// Paddle collisions first (direction-aware) so a valid paddle hit is not treated like a wall score.
+	if (ball_v_x < 0 && next_ball_l <= p1_r && next_ball_r >= p1_l && y_overlap_p1) {
+		ball_v_x *= -1;
+	}
+
+	if (ball_v_x > 0 && next_ball_r >= p2_l && next_ball_l <= p2_r && y_overlap_p2) {
+		ball_v_x *= -1;
+	}
+
+	// Missed paddle and reached a side wall: score.
 	if (next_ball_l <= 0) {
 		ball_v_x *= -1;
-
-		//Score point for P2
-		score_point(2);
-	}
-
-	// Left side collides with P1
-	if (next_ball_l <= p1_r && (next_ball_b >= p1_t && next_ball_t <= p1_b)) {
-		//TEMPORARY, CHANGE THIS TO COOL BOUNCE
-		ball_v_x *= -1;
-	}
-
-	// Right side collides with edge of screen
-	if (next_ball_r >= SCREEN_WIDTH) {
-		ball_v_x *= -1;
-
-		//Score point for P1
 		score_point(1);
 	}
 
-	//Right side collides with P2
-	if (next_ball_r >= p2_r && (next_ball_b >= p2_t && next_ball_t <= p2_b)) {
-		//TEMPORARY, CHANGE THIS TO COOL BOUNCE
+	if (next_ball_r >= SCREEN_WIDTH) {
 		ball_v_x *= -1;
+		score_point(2);
 	}
 
 	ball_x += ball_v_x;
@@ -236,7 +288,7 @@ void score_point(int player) {
 			else {
 				//P1 wins
 				gamestate = STATE_WIN;
-				draw_P_WINS(1);
+				draw_P_WINS(2);
 			}
 			break;
 		
@@ -246,7 +298,7 @@ void score_point(int player) {
 			else {
 				//P2 wins
 				gamestate = STATE_WIN;
-				draw_P_WINS(2);
+				draw_P_WINS(1);
 			}
 			break;
 	}
