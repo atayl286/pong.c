@@ -15,6 +15,10 @@ volatile uint32_t* timer_status  = (uint32_t*)(0xFFFEC600 + 0x0C);
 volatile uint32_t* seven_segment_base_0_3 = 0xFF200020;
 volatile uint32_t* seven_segment_base_4_5 = 0xFF200030;
 
+// ADC memory location:
+#define ADC_BASE   0xFF204000u
+
+
 // Colours:
 #define WHITE 0xFFFF
 #define BLACK 0x0000
@@ -28,6 +32,8 @@ volatile uint32_t* seven_segment_base_4_5 = 0xFF200030;
 
 #define X_CENTRE 160
 #define Y_CENTRE 120
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 240
 
 #define P1_X 20
 #define P2_X 300
@@ -61,6 +67,7 @@ int p1_b = Y_CENTRE + PADDLE_HEIGHT/2;
 int p1_l = P1_X - PADDLE_WIDTH/2;
 int p1_r = P1_X + PADDLE_WIDTH/2;
 
+
 // P2 Paddle:
 int p2_x = P2_X;
 int p2_y = Y_CENTRE;
@@ -80,34 +87,53 @@ int main(void) {
 
 	//Main loop
     while(1) {
-		//Logic that always happens
-		wait_for_next_frame();
+		
+		//measure one players pos at a time and only update screen after both have been measured
+		if (TIMER_TICKED()) {
+			*TIMER_STAT = 1;
+			static int tick_count = 0;
+			tick_count++;
+			if (tick_count >= 2) {
+				tick_count = 0;
+				// Update p1 y pos
+				p1_y = adc_to_y_pos(*(volatile uint32_t*)(ADC_BASE));
 
-		//State-based logic
-		switch(gamestate) {
-			case STATE_PLAY:
-				clear_pixel_buffer();
+			}else{
+				// Update p2 y pos
+				p2_y = adc_to_y_pos(*(volatile uint32_t*)(ADC_BASE + 0x04));
 
-				update_ball();
-				draw_ball(ball_x, ball_y);
-				draw_paddle(p1_x, p1_y);
-				draw_paddle(p2_x, p2_y);
+				//Logic that always happens
+				wait_for_next_frame();
 
-				seven_segment_update();
+				//State-based logic
+				switch(gamestate) {
+					case STATE_PLAY:
+						clear_pixel_buffer();
 
-				push_frame();
-				break;
+						update_ball();
+						draw_ball(ball_x, ball_y);
+						draw_paddle(p1_x, p1_y);
+						draw_paddle(p2_x, p2_y);
 
-			case STATE_PAUSE:
-				//TEMPORARY, CHANGE TO REAL PAUSE LOGIC
-				gamestate = STATE_PLAY;
-				break;
+						seven_segment_update();
 
-			case STATE_WIN:
-				//TEMPORARY, CHANGE TO REAL RESET LOGIC
-				gamestate = STATE_PLAY;
-				break;
-		}
+						push_frame();
+						break;
+
+					case STATE_PAUSE:
+						//TEMPORARY, CHANGE TO REAL PAUSE LOGIC
+						gamestate = STATE_PLAY;
+						break;
+
+					case STATE_WIN:
+						//TEMPORARY, CHANGE TO REAL RESET LOGIC
+						gamestate = STATE_PLAY;
+						break;
+				}
+
+			}
+
+	
 	}
     return 0;
 }
@@ -115,7 +141,7 @@ int main(void) {
 // Initializes the ARM A9 timer.
 void init_frame_timer() {
 	*timer_control = 0; // Turns it OFF while changing settings (if it happens to be ON already)
-	*timer_load = 33333; // Time between frames (will need to be changed on real hardware)
+	*timer_load = 3333333U;; // Time between frames (will need to be changed on real hardware)
 	*timer_status = 1; // Clear any remaning old status flags
 	*timer_control = 3; // Start time with auto-reload
 }
@@ -133,7 +159,7 @@ void wait_for_next_frame() {
 // 0 < y < 240
 // colour: 16-bit
 void draw_pixel(int x, int y, uint16_t colour) {
-    if (x < 0 || x >= 320 || y < 0 || y >= 240) return; // Return if not in the pixel range of the display (320*240)
+    if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) return; // Return if not in the pixel range of the display (320*240)
     pixel_buffer[y][x] = colour;
 }
 
@@ -160,7 +186,7 @@ void update_ball() {
 	}
 
 	// Bottom side collides with bottom of screen
-	if (next_ball_b >= 240) {
+	if (next_ball_b >= SCREEN_HEIGHT) {
 		ball_v_y *= -1;
 	}
 
@@ -168,8 +194,8 @@ void update_ball() {
 	if (next_ball_l <= 0) {
 		ball_v_x *= -1;
 
-		//Score point for P1
-		score_point(1);
+		//Score point for P2
+		score_point(2);
 	}
 
 	// Left side collides with P1
@@ -179,11 +205,11 @@ void update_ball() {
 	}
 
 	// Right side collides with edge of screen
-	if (next_ball_r >= 320) {
+	if (next_ball_r >= SCREEN_WIDTH) {
 		ball_v_x *= -1;
 
-		//Score point for P2
-		score_point(2);
+		//Score point for P1
+		score_point(1);
 	}
 
 	//Right side collides with P2
@@ -351,4 +377,15 @@ void draw_P_WINS(int player) {
 		draw_1();
 	else
 		draw_2();
+}
+
+
+static inline uint32_t adc_to_y_pos(uint32_t adc_value)
+{
+    uint32_t ypos = (adc_value * SCREEN_HEIGHT) / 4095u;
+
+    if (ypos == 0u) return 0u;
+    if (ypos > SCREEN_HEIGHT) ypos = SCREEN_HEIGHT;
+
+    return ypos;
 }
