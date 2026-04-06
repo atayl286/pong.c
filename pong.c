@@ -1,9 +1,12 @@
-// #include "address_map_arm.h"
+//pong.c, Oliver Anderson, Alexander Taylor, Aiden Ferguson
 #include <stdint.h>
 #include <math.h>
 #include <string.h>
+
+#define PIXEL_BUF_BASE 0xC8000000
+#define PIXEL_BUF_CRTL_BASE 0xFF203020
 	
-volatile uint16_t* VGA_BUFFER = (uint16_t*)0xC8000000 /* (uint16_t*)FPGA_PIXEL_BUF_BASE */; // Hardware VGA buffer.
+volatile uint16_t* VGA_BUFFER = (uint16_t*)PIXEL_BUF_BASE; // Hardware VGA buffer.
 uint16_t pixel_buffer[240][512] = {0}; // Software pixel buffer (for double-buffering)
 
 // Timer memory locations:
@@ -102,6 +105,7 @@ void seven_segment_update(void);
 void push_frame(void);
 void score_point(int player);
 void draw_P_WINS(int player);
+void draw_pause(void);
 static inline uint32_t adc_to_y_pos(uint32_t adc_value);
 
 int main(void) {
@@ -184,7 +188,6 @@ int main(void) {
 						break;
 
 					case STATE_WIN:
-						//TEMPORARY, CHANGE TO REAL RESET LOGIC
 						break;
 				}
 
@@ -332,10 +335,16 @@ void seven_segment_update() {
 
 // Draws a circle of given radius and colour and a given position
 void draw_circle(int xpos, int ypos, int radius, uint16_t colour) {
-	for (int r = -radius; r <= radius; r++){
-        int x = sqrt(pow(radius,2) - pow(r,2));
+	int r;
+	for (r = -radius; r <= radius; r++){
+		//DE10 didn't support math.h
+        //int x = sqrt(pow(radius,2) - pow(r,2));
         
-        for ( int i = -x; i <= x; i++){
+		//Temporary replacement
+		int x = radius;
+
+		int i;
+        for (i = -x; i <= x; i++){
             draw_pixel(xpos + i, ypos + r, colour);
         }
     }
@@ -348,9 +357,11 @@ void draw_ball(int xpos, int ypos){
 
 // Draws a rectangle of a given width and height and colour at a given position
 void draw_rectangle(int xpos, int ypos, int width, int height, uint16_t colour) {
-	for(int y = ypos - (height/2); y <= ypos + (height/2); y++)
+	int y;
+	for(y = ypos - (height/2); y <= ypos + (height/2); y++)
 	{
-		for(int x = xpos - (width/2); x <= xpos + (width/2); x++)
+		int x;
+		for(x = xpos - (width/2); x <= xpos + (width/2); x++)
 		{
 			draw_pixel(x, y, colour);
 		}
@@ -431,7 +442,7 @@ void draw_P_WINS(int player) {
 		draw_2();
 }
 
-
+//Converts the measured value from an AD conversion to the y position for a paddle
 static inline uint32_t adc_to_y_pos(uint32_t adc_value)
 {
     uint32_t ypos = (adc_value * SCREEN_HEIGHT) / 4095u;
